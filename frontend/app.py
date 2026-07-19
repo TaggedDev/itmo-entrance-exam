@@ -16,8 +16,8 @@ section = st.sidebar.radio(
 )
 
 
-def api_post(path: str, payload: dict | None = None) -> requests.Response:
-    return requests.post(f"{ML_SERVICE_URL}{path}", json=payload or {}, timeout=20)
+def api_post(path: str, payload: dict | None = None, timeout: int = 20) -> requests.Response:
+    return requests.post(f"{ML_SERVICE_URL}{path}", json=payload or {}, timeout=timeout)
 
 
 def api_get(path: str) -> requests.Response:
@@ -86,11 +86,24 @@ else:
     st.subheader("Проиндексировать базу знаний")
     health = api_get("/health")
     if health.ok:
-        st.json(health.json())
-    if st.button("Запустить векторизацию"):
-        response = api_post("/knowledge/reindex")
+        payload = health.json()
+        st.caption(
+            f"ML service: {payload['status']} · Chroma: "
+            f"{payload['chroma_host']}:{payload['chroma_port']} · "
+            f"Embeddings: {payload['embedding_model']}"
+        )
+    else:
+        st.warning("ML-сервис пока не отвечает.")
+
+    if st.button("Запустить векторизацию", type="primary"):
+        with st.spinner("Индексируем документы и строим embeddings. Первый запуск может занять несколько минут."):
+            response = api_post("/knowledge/reindex", timeout=300)
         if response.ok:
-            st.success("База знаний проиндексирована.")
-            st.json(response.json())
+            result = response.json()
+            st.success(
+                f"База знаний проиндексирована: файлов {result['indexed_files']}, "
+                f"фрагментов {result['indexed_chunks']}."
+            )
+            st.json(result)
         else:
             st.error(response.text)
