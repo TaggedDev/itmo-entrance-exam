@@ -28,6 +28,8 @@ def health() -> dict[str, object]:
         "langfuse_enabled": tracer.enabled,
         "chroma_host": settings.chroma_host,
         "chroma_port": settings.chroma_port,
+        "embedding_provider": settings.embedding_provider,
+        "embedding_model": settings.embedding_model,
     }
 
 
@@ -40,6 +42,8 @@ def reindex() -> ReindexResponse:
         indexed_files=indexed_files,
         indexed_chunks=indexed_chunks,
         collection=settings.chroma_collection,
+        embedding_provider=settings.embedding_provider,
+        embedding_model=settings.embedding_model,
     )
 
 

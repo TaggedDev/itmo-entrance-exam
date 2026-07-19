@@ -5,11 +5,15 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
 from ml_service.config import Settings
-from ml_service.embeddings import DeterministicHashEmbeddings
+from ml_service.embeddings import build_embeddings
 
 
 def get_chroma(settings: Settings) -> Chroma:
-    embeddings = DeterministicHashEmbeddings()
+    embeddings = build_embeddings(
+        provider=settings.embedding_provider,
+        model_name=settings.embedding_model,
+        device=settings.embedding_device,
+    )
     try:
         client = chromadb.HttpClient(host=settings.chroma_host, port=settings.chroma_port)
         client.heartbeat()
@@ -17,12 +21,14 @@ def get_chroma(settings: Settings) -> Chroma:
             client=client,
             collection_name=settings.chroma_collection,
             embedding_function=embeddings,
+            collection_metadata={"hnsw:space": "cosine"},
         )
     except Exception:
         return Chroma(
             collection_name=settings.chroma_collection,
             persist_directory=str(settings.data_dir / "chroma_local"),
             embedding_function=embeddings,
+            collection_metadata={"hnsw:space": "cosine"},
         )
 
 

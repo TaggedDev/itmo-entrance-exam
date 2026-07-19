@@ -29,6 +29,8 @@ class ReindexResponse(BaseModel):
     indexed_files: int
     indexed_chunks: int
     collection: str
+    embedding_provider: str
+    embedding_model: str
 
 
 class PendingTicket(BaseModel):

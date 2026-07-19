@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     chroma_host: str = "localhost"
     chroma_port: int = 8000
     chroma_collection: str = "support_kb"
+    embedding_provider: str = "e5"
+    embedding_model: str = "intfloat/multilingual-e5-small"
+    embedding_device: str = "cpu"
     data_dir: Path = ROOT_DIR / "data"
     knowledge_dir: Path = ROOT_DIR / "knowledge"
     deepseek_base_url: str = "https://api.deepseek.com"
