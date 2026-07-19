@@ -39,11 +39,17 @@ flowchart LR
 
 ## Sync и async
 
-В PoC HTTP endpoints асинхронные, а blocking-вызовы совместимы через `asyncio.to_thread`. При этом бизнес-пайплайн остается линейным: preprocess -> classify -> retrieve -> answer -> log. В PoC не реализованы production queue, rate limiting и отдельный fast path до 500 мс; в целевой архитектуре быстрая классификация и маршрутизация должны быть отделены от медленной LLM-генерации.
+В PoC внешние HTTP endpoints реализованы как асинхронные: обработка тикета, reindex базы знаний, просмотр pending-тикетов и модерация вызываются через async def. Асинхронные контракты также добавлены для LLM-классификации, генерации ответа, retrieval из Chroma, индексации базы знаний и записи audit/pending событий.
+
+При этом часть используемых библиотек и операций остается синхронной: Chroma/LangChain-вызовы, файловая запись JSONL и fallback-вызовы клиентов без ainvoke. Чтобы такие blocking-операции не блокировали event loop напрямую, они обернуты через asyncio.to_thread.
+
+Бизнес-пайплайн в PoC остается линейным: preprocess -> classify -> retrieve -> answer -> log. Production queue, rate limiting и отдельный fast path до 500 мс не реализованы. В целевой архитектуре быстрая классификация и маршрутизация должны быть отделены от медленной LLM-генерации и долгой индексации базы знаний.
 
 ## Хранилища и интеграции
 
 Chroma хранит индекс базы знаний. `knowledge/*.txt` является локальным источником доменов: `auth`, `feedback`, `legal`, `payments`; дополнительно есть `general` и `unknown`. JSONL используется для прозрачного audit log и списка pending tickets. В production JSONL заменяется на устойчивое event-хранилище и очередь модерации.
+
+Chroma хранит векторизирвоанные представления *txt базы знаний, а Postgre хранит тикеты
 
 ## Human-in-the-loop и fallback
 
