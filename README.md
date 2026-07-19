@@ -1,10 +1,13 @@
 # AI Support Ticket Assistant PoC
 
-Минимальный PoC показывает обработку тикетов поддержки: классификация, оценка риска, retrieval из базы знаний Chroma, mock-ответ LLM, запись audit log и отправка рискованных обращений на модерацию.
+Минимальный PoC показывает ML pipeline для обработки тикетов поддержки:
+нормализация текста, маскирование PII, классификация через DeepSeek, retrieval из Chroma,
+генерация ответа на основе базы знаний, audit log и очередь тикетов для human review.
 
 ## Запуск
 
-1. Скопируйте `.env.example` в `.env` и при необходимости заполните `DEEPSEEK-API-KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`.
+1. Скопируйте `.env.example` в `.env` и заполните `DEEPSEEK-API-KEY`.
+   Langfuse credentials опциональны.
 2. Запустите стенд:
 
 ```bash
@@ -13,19 +16,35 @@ docker compose up --build
 
 3. Откройте:
    - Streamlit UI: http://localhost:8501
-   - Langfuse self-hosted UI: http://localhost:3000
+   - Langfuse UI: http://localhost:3000
    - ML service health: http://localhost:8080/health
 
 ## Demo Scenario
 
-В Streamlit откройте вкладку `Проиндексировать базу знаний` и нажмите кнопку векторизации. Затем во вкладке `Написать тикет` отправьте безопасный запрос: `Не приходит код для входа в аккаунт`. Система вернет категорию `auth`, найденный контекст и draft ответа.
+Сначала во вкладке индексации запустите векторизацию базы знаний. Chroma проиндексирует
+файлы из `knowledge/*.txt`; категории тикетов берутся из имен этих файлов.
 
-Для risky path отправьте: `У меня юридическая претензия и я пойду в суд`. Система не закрывает тикет автоматически, а кладет его во вкладку `Модерация тикетов`.
+Затем отправьте тикет:
 
-## Что реально реализовано
+```text
+Не приходит код для входа в аккаунт, мой email test@example.com
+```
 
-Реализованы Streamlit UI, FastAPI ML service, Chroma indexing/retrieval, JSONL audit log, pending moderation и optional Langfuse tracing. DeepSeek API key читается из `.env` как `DEEPSEEK-API-KEY`, но генерация ответа в MVP остается моковой.
+Pipeline вернет категорию, redacted text, найденные источники и ответ. Для legal/payment
+или неуверенных обращений поле `requires_human_review` будет `true`, а тикет попадет в
+список модерации.
+
+## Что реализовано
+
+- FastAPI ML service и Streamlit UI.
+- LangChain + DeepSeek-compatible `ChatOpenAI`.
+- Chroma retrieval поверх уже существующей embedding-модели.
+- Pydantic-структуры для входа, классификации, retrieval-контекста и ответа.
+- Regex-маскирование email, телефонов и номеров карт.
+- JSONL audit log и pending moderation для проверяемых тикетов.
 
 ## Упрощения
 
-Нет авторизации, миграций, настоящей очереди, production-хранилища тикетов и реального LLM-вызова. LangGraph не используется, потому что MVP pipeline линейный. В целевой архитектуре JSONL заменяется на Postgres/Event Log, mock LLM - на DeepSeek API, а правила классификации - на ML baseline.
+Это экзаменационный PoC, а не production highload-система. Здесь нет очередей,
+rate limiting, авторизации, SLA-оркестрации, обучения модели и сложного branching.
+Pipeline намеренно линейный: preprocess -> classify -> retrieve -> answer -> log.

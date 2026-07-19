@@ -58,6 +58,42 @@ def reindex_knowledge(settings: Settings) -> tuple[int, int]:
     return len(files), len(documents)
 
 
+def inspect_knowledge(settings: Settings, limit: int = 10) -> dict[str, object]:
+    vectorstore = get_chroma(settings)
+    collection = vectorstore._collection
+    count = collection.count()
+    result = collection.get(
+        limit=limit,
+        include=["documents", "embeddings", "metadatas"],
+    )
+    items: list[dict[str, object]] = []
+    documents = result.get("documents") or []
+    metadatas = result.get("metadatas") or []
+    embeddings = result.get("embeddings")
+    ids = result.get("ids") or []
+    for index, document in enumerate(documents):
+        embedding = embeddings[index] if embeddings is not None and index < len(embeddings) else []
+        metadata = metadatas[index] if index < len(metadatas) else {}
+        item_id = ids[index] if index < len(ids) else ""
+        items.append(
+            {
+                "id": item_id,
+                "metadata": metadata or {},
+                "text": document,
+                "characters": len(document),
+                "embedding_dimensions": len(embedding),
+                "embedding_preview": [round(float(value), 6) for value in embedding[:8]],
+            }
+        )
+    return {
+        "collection": settings.chroma_collection,
+        "count": count,
+        "embedding_provider": settings.embedding_provider,
+        "embedding_model": settings.embedding_model,
+        "items": items,
+    }
+
+
 def retrieve_context(settings: Settings, query: str, k: int = 2) -> list[dict[str, object]]:
     vectorstore = get_chroma(settings)
     try:
@@ -70,6 +106,7 @@ def retrieve_context(settings: Settings, query: str, k: int = 2) -> list[dict[st
         contexts.append(
             {
                 "domain": str(document.metadata.get("domain", "unknown")),
+                "source": str(document.metadata.get("source", "unknown")),
                 "text": document.page_content,
                 "score": round(float(score), 3),
             }

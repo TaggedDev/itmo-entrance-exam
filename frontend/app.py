@@ -20,8 +20,8 @@ def api_post(path: str, payload: dict | None = None, timeout: int = 20) -> reque
     return requests.post(f"{ML_SERVICE_URL}{path}", json=payload or {}, timeout=timeout)
 
 
-def api_get(path: str) -> requests.Response:
-    return requests.get(f"{ML_SERVICE_URL}{path}", timeout=20)
+def api_get(path: str, timeout: int = 20) -> requests.Response:
+    return requests.get(f"{ML_SERVICE_URL}{path}", timeout=timeout)
 
 
 if section == "Написать тикет":
@@ -42,13 +42,14 @@ if section == "Написать тикет":
             left, right = st.columns(2)
             with left:
                 st.metric("Category", result["category"])
-                st.metric("Risk", result["risk_level"])
-                st.metric("Confidence", result["confidence"])
+                st.metric("Human review", str(result["requires_human_review"]))
             with right:
-                st.write("Draft response")
-                st.info(result["draft_response"])
+                st.write("Answer")
+                st.info(result["answer"])
             st.write("Retrieved context")
             st.json(result["retrieved_context"])
+            st.write("Sources")
+            st.json(result["sources"])
         else:
             st.error(response.text)
 
@@ -62,9 +63,10 @@ elif section == "Модерация тикетов":
         if not pending:
             st.info("Нет тикетов на модерации.")
         for ticket in pending:
-            with st.expander(f"{ticket['ticket_id']} · {ticket['category']} · {ticket['risk_level']}"):
-                st.write(ticket["text"])
-                st.info(ticket["draft_response"])
+            title = f"{ticket['ticket_id']} · {ticket['category']} · review={ticket['requires_human_review']}"
+            with st.expander(title):
+                st.write(ticket["original_text"])
+                st.info(ticket["answer"])
                 note = st.text_input("Комментарий оператора", key=f"note-{ticket['ticket_id']}")
                 col1, col2 = st.columns(2)
                 with col1:
@@ -95,15 +97,37 @@ else:
     else:
         st.warning("ML-сервис пока не отвечает.")
 
-    if st.button("Запустить векторизацию", type="primary"):
-        with st.spinner("Индексируем документы и строим embeddings. Первый запуск может занять несколько минут."):
-            response = api_post("/knowledge/reindex", timeout=300)
-        if response.ok:
-            result = response.json()
-            st.success(
-                f"База знаний проиндексирована: файлов {result['indexed_files']}, "
-                f"фрагментов {result['indexed_chunks']}."
-            )
-            st.json(result)
-        else:
-            st.error(response.text)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Запустить векторизацию", type="primary"):
+            with st.spinner("Индексируем документы и строим embeddings. Первый запуск может занять несколько минут."):
+                response = api_post("/knowledge/reindex", timeout=300)
+            if response.ok:
+                result = response.json()
+                st.success(
+                    f"База знаний проиндексирована: файлов {result['indexed_files']}, "
+                    f"фрагментов {result['indexed_chunks']}."
+                )
+                st.json(result)
+            else:
+                st.error(response.text)
+    with col2:
+        if st.button("Показать чанки"):
+            response = api_get("/knowledge/inspect?limit=20", timeout=60)
+            if response.ok:
+                result = response.json()
+                st.success(f"В коллекции `{result['collection']}` сейчас {result['count']} чанков.")
+                for item in result["items"]:
+                    metadata = item["metadata"]
+                    label = (
+                        f"{metadata.get('source', 'unknown')} · chunk={metadata.get('chunk', '?')} · "
+                        f"dim={item['embedding_dimensions']}"
+                    )
+                    with st.expander(label):
+                        st.write(item["text"])
+                        st.write("Metadata")
+                        st.json(metadata)
+                        st.write("Embedding preview")
+                        st.json(item["embedding_preview"])
+            else:
+                st.error(response.text)

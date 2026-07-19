@@ -1,9 +1,38 @@
 # ML Design
 
-В MVP есть четыре ML/LLM-задачи: классификация тикета, risk scoring, retrieval из базы знаний и генерация черновика ответа. Классификация и риск сейчас сделаны правилами, потому что это быстрый baseline и он прозрачен для risky категорий.
+ML-часть реализована как простой линейный LangChain pipeline:
 
-Retrieval реализован через LangChain + Chroma. База знаний лежит в `knowledge/*.txt`, режется на chunks и индексируется deterministic hash embedding. Такой embedding слабее настоящих sentence embeddings, но не требует скачивания моделей и подходит для PoC.
+```text
+TicketRequest
+-> normalize text
+-> redact PII
+-> classify with DeepSeek
+-> retrieve context from Chroma
+-> generate grounded answer with DeepSeek
+-> return Pydantic TicketResponse
+```
 
-LLM в MVP не вызывается: ответ генерируется mock-функцией, но ML-сервис сразу читает `DEEPSEEK-API-KEY` из `.env` и имеет стабильную точку для будущего DeepSeek-вызова. Risky категории: legal, refund, account takeover, персональные данные и low-confidence обращения. Они не закрываются автоматически.
+## Preprocessing
 
-LangGraph сознательно отложен. Текущий workflow линейный: classify -> retrieve -> generate draft -> log. Если появятся ретраи, многошаговые состояния, tool calls и ручные переходы между этапами, LangGraph можно добавить без изменения REST-контракта.
+Перед вызовом LLM текст приводится к нижнему регистру, лишние пробелы схлопываются,
+а чувствительные данные маскируются простыми regex-правилами:
+
+- email -> `[EMAIL]`
+- phone -> `[PHONE]`
+- card-like number -> `[CARD]`
+
+## Classification
+
+Классификатор использует отдельный prompt и возвращает только Pydantic-схему
+`TicketClassification`: `category` и `requires_human_review`.
+
+Список категорий берется из файлов `knowledge/*.txt`: `auth`, `feedback`, `legal`,
+`payments`; дополнительно есть fallback `unknown`. Risk level и confidence удалены,
+чтобы не усложнять PoC.
+
+## Retrieval And Answering
+
+Retrieval работает через существующую интеграцию LangChain + Chroma. Query строится как
+`category + redacted_text`, `top_k=3`. Ответ генерируется DeepSeek только на основе
+найденных источников. Если источников нет или LLM недоступна, pipeline деградирует
+безопасно: тикет требует human review, а ответ не выдумывает факты.

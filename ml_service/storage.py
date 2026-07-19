@@ -21,7 +21,7 @@ class JsonlStore:
         if not self.pending_path.exists():
             return []
         with self.pending_path.open("r", encoding="utf-8") as file:
-            return [json.loads(line) for line in file if line.strip()]
+            return [self._normalize_pending(json.loads(line)) for line in file if line.strip()]
 
     def moderate(self, ticket_id: str, action: str, operator_note: str) -> str:
         tickets = self.list_pending()
@@ -54,3 +54,14 @@ class JsonlStore:
 
     def _with_time(self, event: dict[str, Any]) -> dict[str, Any]:
         return {"created_at": datetime.now(timezone.utc).isoformat(), **event}
+
+    def _normalize_pending(self, ticket: dict[str, Any]) -> dict[str, Any]:
+        if "answer" in ticket and "original_text" in ticket:
+            return ticket
+        return {
+            **ticket,
+            "original_text": ticket.get("original_text", ticket.get("text", "")),
+            "redacted_text": ticket.get("redacted_text", ticket.get("text", "")),
+            "requires_human_review": ticket.get("requires_human_review", True),
+            "answer": ticket.get("answer", ticket.get("draft_response", "")),
+        }

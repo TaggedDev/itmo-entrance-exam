@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException
 
 from ml_service.config import get_settings
-from ml_service.kb import reindex_knowledge
+from ml_service.kb import inspect_knowledge, reindex_knowledge
 from ml_service.pipeline import process_ticket
 from ml_service.schemas import (
+    KnowledgeInspectResponse,
     ModerationRequest,
     ModerationResponse,
     PendingTicket,
@@ -45,6 +46,11 @@ def reindex() -> ReindexResponse:
         embedding_provider=settings.embedding_provider,
         embedding_model=settings.embedding_model,
     )
+
+
+@app.get("/knowledge/inspect", response_model=KnowledgeInspectResponse)
+def inspect(limit: int = 10) -> dict[str, object]:
+    return inspect_knowledge(settings, limit=max(1, min(limit, 50)))
 
 
 @app.post("/tickets/process", response_model=TicketResponse)

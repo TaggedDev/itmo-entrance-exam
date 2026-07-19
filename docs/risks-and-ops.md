@@ -1,15 +1,15 @@
 # Risks And Ops
 
-## Highload And Reliability
+## Reliability
 
-- Быстрый путь: классификация, риск и маршрутизация; генерация ответа может быть асинхронной.
-- Пики нагрузки сглаживаются очередью в целевой архитектуре; в PoC очередь заменена JSONL pending list.
-- При недоступности LLM система возвращает mock/template draft и не закрывает risky тикеты.
-- Chroma используется только для retrieval, поэтому сбой Chroma не блокирует human escalation.
+- В PoC pipeline синхронный и линейный: preprocess -> classify -> retrieve -> answer.
+- Очереди, rate limits и highload-оркестрация намеренно не реализованы.
+- При недоступности LLM система безопасно деградирует: возвращает ограниченный ответ и отправляет тикет на human review.
+- Если Chroma не вернула контекст, ответ не выдумывает факты, а тикет также требует human review.
 
-## Privacy, Safety And Risk
+## Privacy And Safety
 
-- PII и юридические обращения нельзя отправлять во внешний LLM без редактирования и политики доступа.
-- Legal, refund, account takeover и персональные данные всегда требуют human-in-the-loop.
-- Prompt injection в пользовательском тексте не должен менять системные правила маршрутизации.
-- Все решения пишутся в audit log, чтобы можно было восстановить причину draft/эскалации.
+- Email, телефоны и card-like номера маскируются до отправки текста в LLM.
+- Legal, payment/refund disputes, account takeover и `unknown` требуют human-in-the-loop.
+- Prompt injection в пользовательском тексте не должен менять системные инструкции классификации или генерации.
+- Все решения пишутся в JSONL audit log, чтобы можно было восстановить причину ответа или эскалации.
