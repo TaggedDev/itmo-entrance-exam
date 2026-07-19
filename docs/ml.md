@@ -1,38 +1,52 @@
-# ML Design
+# ML/LLM-дизайн
 
-ML-часть реализована как простой линейный LangChain pipeline:
+## Задачи в системе
 
-```text
-TicketRequest
--> normalize text
--> redact PII
--> classify with DeepSeek
--> retrieve context from Chroma
--> generate grounded answer with DeepSeek
--> return Pydantic TicketResponse
-```
+| Задача | Подход в PoC | Почему так |
+| --- | --- | --- |
+| PII masking | Regex-правила | Быстро, прозрачно, до вызова LLM |
+| Small talk/general | Правила | Низкий риск, не нужен LLM |
+| Категоризация | DeepSeek + fallback rules | Нужно понимать формулировки, но fallback безопасен |
+| Risk routing | LLM + keyword rules | Риск важнее процента автозакрытия |
+| Retrieval | Chroma по `knowledge/*.txt` | Ответ должен опираться на источники |
+| Генерация ответа | DeepSeek grounded answer | Нужен краткий естественный draft |
 
-## Preprocessing
+## Что решается правилами
 
-Перед вызовом LLM текст приводится к нижнему регистру, лишние пробелы схлопываются,
-а чувствительные данные маскируются простыми regex-правилами:
+Правила покрывают нормализацию, regex PII masking, small talk, fallback `unknown`, review keywords и безопасную деградацию при ошибке LLM. Правила также запрещают безопасное автозакрытие для юридических претензий, спорных платежей, fraud/account takeover, privacy-запросов и неопределенных тикетов.
 
-- email -> `[EMAIL]`
-- phone -> `[PHONE]`
-- card-like number -> `[CARD]`
+## Где нужна классическая ML-модель
 
-## Classification
+В целевой архитектуре классическая модель уместна для fast classification и risk scoring на горячем пути до 500 мс. Ее можно обучать на исторических тикетах с ручной разметкой категорий, risky-флага, итогового маршрута и результата модерации. Технические метрики выбора: macro F1 по категориям, risky recall, false negative rate для risky, latency p95, стабильность по каналам входа.
 
-Классификатор использует отдельный prompt и возвращает только Pydantic-схему
-`TicketClassification`: `category` и `requires_human_review`.
+## Retrieval и embeddings
 
-Список категорий берется из файлов `knowledge/*.txt`: `auth`, `feedback`, `legal`,
-`payments`; дополнительно есть fallback `unknown`. Risk level и confidence удалены,
-чтобы не усложнять PoC.
+Retrieval нужен для ответов по базе знаний: LLM не должен вспоминать факты из параметров модели. В PoC Chroma индексирует `knowledge/*.txt`, query строится из категории и redacted text, `top_k=3`. Deterministic hash embeddings — PoC-заглушка для offline smoke checks; она не является качественной семантической моделью. Optional E5 embeddings доступны через `uv sync --extra e5` и являются более реалистичным локальным вариантом.
 
-## Retrieval And Answering
+## Где нужен LLM
 
-Retrieval работает через существующую интеграцию LangChain + Chroma. Query строится как
-`category + redacted_text`, `top_k=3`. Ответ генерируется DeepSeek только на основе
-найденных источников. Если источников нет или LLM недоступна, pipeline деградирует
-безопасно: тикет требует human review, а ответ не выдумывает факты.
+LLM используется для классификации нестрогих пользовательских формулировок и генерации draft-ответа на русском языке по retrieved context. Температура равна `0`, ответ ограничен системным prompt: использовать только контекст и не запрашивать пароль, полный номер карты, CVC/CVV, токены или 2FA-коды. Текущий PoC использует DeepSeek-compatible `ChatOpenAI` и модель из `.env`.
+
+## Где LLM не использовать
+
+LLM не должен принимать финальное решение по legal, спорным payments, account takeover и privacy без оператора. LLM не должен видеть немаскированные PII, генерировать ответы без контекста, исполнять инструкции из пользовательского prompt injection или определять production SLA routing без проверенного fast path.
+
+## Базовый подход
+
+Первый базовый подход: rules + retrieval + LLM draft только в suggest mode. Минимальный критерий: safe path дает `auto_draft_ready` с источниками, risky/fallback path дает `needs_human_review`, audit log содержит каждое решение. Следующий базовый подход: классическая fast-модель для категории/risk и LLM только для медленной генерации draft.
+
+## Валидация качества
+
+| Уровень | Метрика | Порог старта |
+| --- | --- | --- |
+| Категории | macro F1 по ручной выборке | `>= 0.80` перед расширением |
+| Risk routing | false negative risky | `<= 2%` |
+| Retrieval | доля ответов с релевантным source | `>= 85%` на labeled set |
+| Draft | доля ответов без правки оператора | `>= 70%` для safe FAQ |
+| Безопасность | unsafe draft rate | `0` критичных случаев в пилоте |
+
+Low confidence в PoC представлен через `unknown`, пустой retrieval context и `requires_human_review=true`. Такие тикеты не закрываются автоматически и попадают в pending moderation.
+
+## Данные и разметка
+
+Для production нужны исторические тикеты, канал, финальная категория, операторское решение, факт reopen, SLA breach, CSAT, наличие PII, risky-label и исправления draft. Разметка нужна минимум для 300-500 тикетов на shadow-проверку и далее для регулярной переоценки drift. В PoC модель не обучалась; используются DeepSeek, локальные правила и маленькая база знаний.

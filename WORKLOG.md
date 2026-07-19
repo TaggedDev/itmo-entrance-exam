@@ -1,9 +1,3 @@
-# Worklog
+# Журнал работы
 
-Стартовый план был сделать работающий PoC за минимальное время и не строить production-систему. Основной скоуп: Streamlit UI, ML-сервис, Chroma, Langfuse, knowledge-файлы и документация.
-
-В процессе было сознательно вырезано обучение модели, реальный DeepSeek-вызов, миграции и полноценная очередь. LangGraph тоже отложен, потому что текущий workflow линейный и должен быть понятным при проверке.
-
-Не по плану пошло то, что self-hosted Langfuse требует несколько supporting services, поэтому compose стал тяжелее. Чтобы снизить риск, ML-сервис не зависит жестко от Langfuse credentials и продолжает работать без tracing.
-
-Фокус времени был на demo path: reindex, safe ticket draft, risky ticket moderation и audit log. Документация описывает, какие части являются MVP-заглушками и чем они заменяются в целевой архитектуре.
+Стартовый план был уложиться в 4-часовой timebox и показать не production-систему, а связанный PoC с понятными компромиссами. Основной скоуп включал Streamlit UI, FastAPI ML service, Chroma, DeepSeek-compatible LLM, optional Langfuse tracing, файлы базы знаний, audit log и документацию. Время было распределено вокруг demo scenario: сначала переиндексация базы знаний, затем безопасный draft по тикету, затем модерация risky ticket и проверка audit trail. Не по плану пошло то, что self-hosted Langfuse требует несколько supporting services, поэтому Docker Compose стал тяжелее. Чтобы снизить риск, ML-сервис не зависит жестко от Langfuse credentials и работает без tracing. Из scope сознательно вырезаны обучение модели, production queue, rate limiting, SLA orchestration, полноценный операторский UI и реальный highload path. Это вырезано потому, что задание требует минимальный PoC и рассуждение о компромиссах, а не production-ready платформу. Текущее состояние репозитория соответствует этому scope: есть happy path, risky/fallback path, JSONL audit log и документация с явным разделением PoC и целевой архитектуры.
