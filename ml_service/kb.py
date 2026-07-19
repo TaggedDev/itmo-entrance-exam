@@ -6,6 +6,7 @@ from langchain_core.documents import Document
 
 from ml_service.config import Settings
 from ml_service.embeddings import build_embeddings
+from ml_service.tracing import LangfuseTracer
 
 
 def get_chroma(settings: Settings) -> Chroma:
@@ -32,29 +33,55 @@ def get_chroma(settings: Settings) -> Chroma:
         )
 
 
-def reindex_knowledge(settings: Settings) -> tuple[int, int]:
+def reindex_knowledge(settings: Settings, tracer: LangfuseTracer | None = None) -> tuple[int, int]:
     settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
     vectorstore = get_chroma(settings)
-    try:
-        vectorstore.delete_collection()
-    except Exception:
-        pass
+    with _observation(tracer, "chroma_delete_collection", input={"collection": settings.chroma_collection}):
+        try:
+            vectorstore.delete_collection()
+        except Exception:
+            pass
     vectorstore = get_chroma(settings)
 
     documents: list[Document] = []
     files = sorted(settings.knowledge_dir.glob("*.txt"))
-    for path in files:
-        domain = path.stem
-        text = path.read_text(encoding="utf-8")
-        for index, chunk in enumerate(_split_text(text)):
-            documents.append(
-                Document(
-                    page_content=chunk,
-                    metadata={"domain": domain, "source": path.name, "chunk": index},
+    with _observation(
+        tracer,
+        "knowledge_chunk_documents",
+        input={"knowledge_dir": str(settings.knowledge_dir), "files": [path.name for path in files]},
+    ) as observation:
+        for path in files:
+            domain = path.stem
+            text = path.read_text(encoding="utf-8")
+            chunks = _split_text(text)
+            for index, chunk in enumerate(chunks):
+                documents.append(
+                    Document(
+                        page_content=chunk,
+                        metadata={"domain": domain, "source": path.name, "chunk": index},
+                    )
                 )
-            )
+        observation.update(
+            output={
+                "indexed_files": len(files),
+                "indexed_chunks": len(documents),
+                "chunk_characters": [len(document.page_content) for document in documents],
+            }
+        )
     if documents:
-        vectorstore.add_documents(documents)
+        with _observation(
+            tracer,
+            "chroma_add_documents",
+            as_type="embedding",
+            input={
+                "collection": settings.chroma_collection,
+                "documents": len(documents),
+                "embedding_provider": settings.embedding_provider,
+                "embedding_model": settings.embedding_model,
+            },
+        ) as observation:
+            ids = vectorstore.add_documents(documents)
+            observation.update(output={"ids": ids, "documents": len(ids)})
     return len(files), len(documents)
 
 
@@ -128,3 +155,11 @@ def _split_text(text: str, max_chars: int = 700) -> list[str]:
     if current:
         chunks.append(current)
     return chunks
+
+
+def _observation(tracer: LangfuseTracer | None, name: str, **kwargs: object):
+    if tracer is None:
+        from contextlib import nullcontext
+
+        return nullcontext(type("NoopObservation", (), {"update": lambda self, **_kwargs: None})())
+    return tracer.observation(name, **kwargs)

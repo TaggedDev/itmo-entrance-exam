@@ -36,8 +36,8 @@ def health() -> dict[str, object]:
 
 @app.post("/knowledge/reindex", response_model=ReindexResponse)
 def reindex() -> ReindexResponse:
-    with tracer.span("knowledge_reindex"):
-        indexed_files, indexed_chunks = reindex_knowledge(settings)
+    with tracer.observation("knowledge_reindex", as_type="chain", metadata={"collection": settings.chroma_collection}):
+        indexed_files, indexed_chunks = reindex_knowledge(settings, tracer=tracer)
     tracer.flush()
     return ReindexResponse(
         indexed_files=indexed_files,
@@ -55,8 +55,20 @@ def inspect(limit: int = 10) -> dict[str, object]:
 
 @app.post("/tickets/process", response_model=TicketResponse)
 def process(request: TicketRequest) -> dict[str, object]:
-    with tracer.span("ticket_process", channel=request.channel):
-        result = process_ticket(settings, store, request.text, request.channel, request.user_id)
+    with tracer.observation(
+        "ticket_process",
+        as_type="chain",
+        input={"channel": request.channel, "characters": len(request.text), "user_id": request.user_id},
+    ) as observation:
+        result = process_ticket(settings, store, request.text, request.channel, request.user_id, tracer=tracer)
+        observation.update(
+            output={
+                "ticket_id": result["ticket_id"],
+                "category": result["category"],
+                "decision": result["decision"],
+                "sources": result["sources"],
+            }
+        )
     tracer.flush()
     return result
 

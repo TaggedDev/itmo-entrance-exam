@@ -11,6 +11,7 @@ from ml_service.config import Settings
 from ml_service.kb import retrieve_context
 from ml_service.schemas import RetrievedContext, TicketClassification, TicketResponse
 from ml_service.storage import JsonlStore
+from ml_service.tracing import LangfuseTracer
 
 
 DEFAULT_CATEGORIES = ("auth", "feedback", "legal", "payments", "unknown")
@@ -52,9 +53,10 @@ class DeepSeekChatFactory:
 
 
 class TicketClassifier:
-    def __init__(self, llm: Any, categories: list[str]) -> None:
+    def __init__(self, llm: Any, categories: list[str], tracer: LangfuseTracer | None = None) -> None:
         self.llm = llm
         self.categories = categories
+        self.tracer = tracer
         self.parser = PydanticOutputParser(pydantic_object=TicketClassification)
         self.prompt = ChatPromptTemplate.from_messages(
             [
@@ -79,14 +81,19 @@ class TicketClassifier:
         if self.llm is None:
             return self._fallback(ticket_text)
         try:
-            message = self.prompt.invoke(
-                {
-                    "categories": ", ".join(self.categories),
-                    "ticket_text": ticket_text,
-                    "format_instructions": self.parser.get_format_instructions(),
-                }
-            )
-            raw = self.llm.invoke(message)
+            prompt_input = {
+                "categories": ", ".join(self.categories),
+                "ticket_text": ticket_text,
+                "format_instructions": self.parser.get_format_instructions(),
+            }
+            message = self.prompt.invoke(prompt_input)
+            with self._generation_observation(
+                "llm_classify_ticket",
+                input=prompt_input,
+                model=getattr(self.llm, "model_name", None) or getattr(self.llm, "model", None),
+            ) as observation:
+                raw = self.llm.invoke(message)
+                observation.update(output=str(getattr(raw, "content", raw)))
             classification = self.parser.parse(str(getattr(raw, "content", raw)))
         except Exception:
             return self._fallback(ticket_text)
@@ -107,16 +114,46 @@ class TicketClassifier:
             requires_human_review=category in SENSITIVE_CATEGORIES or category == "unknown",
         )
 
+    def _generation_observation(self, name: str, **kwargs: object):
+        if self.tracer is None:
+            from contextlib import nullcontext
+
+            return nullcontext(type("NoopObservation", (), {"update": lambda self, **_kwargs: None})())
+        return self.tracer.observation(
+            name,
+            as_type="generation",
+            model_parameters={"temperature": 0},
+            **kwargs,
+        )
+
 
 class KnowledgeRetriever:
-    def __init__(self, settings: Settings, top_k: int = 3) -> None:
+    def __init__(self, settings: Settings, top_k: int = 3, tracer: LangfuseTracer | None = None) -> None:
         self.settings = settings
         self.top_k = top_k
+        self.tracer = tracer
 
     def retrieve(self, category: str, ticket_text: str) -> list[RetrievedContext]:
         query = f"{category}\n{ticket_text}"
         contexts: list[RetrievedContext] = []
-        for context in retrieve_context(self.settings, query, k=self.top_k):
+        with self._retriever_observation(
+            "chroma_retrieve_context",
+            input={"query": query, "k": self.top_k, "collection": self.settings.chroma_collection},
+        ) as observation:
+            raw_contexts = retrieve_context(self.settings, query, k=self.top_k)
+            observation.update(
+                output=[
+                    {
+                        "domain": context.get("domain"),
+                        "source": context.get("source"),
+                        "score": context.get("score"),
+                        "characters": len(str(context.get("text", ""))),
+                    }
+                    for context in raw_contexts
+                ],
+                metadata={"returned": len(raw_contexts)},
+            )
+        for context in raw_contexts:
             contexts.append(
                 RetrievedContext(
                     domain=str(context.get("domain", "unknown")),
@@ -127,10 +164,18 @@ class KnowledgeRetriever:
             )
         return contexts
 
+    def _retriever_observation(self, name: str, **kwargs: object):
+        if self.tracer is None:
+            from contextlib import nullcontext
+
+            return nullcontext(type("NoopObservation", (), {"update": lambda self, **_kwargs: None})())
+        return self.tracer.observation(name, as_type="retriever", **kwargs)
+
 
 class AnswerGenerator:
-    def __init__(self, llm: Any) -> None:
+    def __init__(self, llm: Any, tracer: LangfuseTracer | None = None) -> None:
         self.llm = llm
+        self.tracer = tracer
         self.prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -157,14 +202,19 @@ class AnswerGenerator:
         if self.llm is None:
             return self._fallback_answer(category, contexts)
         try:
-            message = self.prompt.invoke(
-                {
-                    "category": category,
-                    "ticket_text": ticket_text,
-                    "context": context_text,
-                }
-            )
-            raw = self.llm.invoke(message)
+            prompt_input = {
+                "category": category,
+                "ticket_text": ticket_text,
+                "context": context_text,
+            }
+            message = self.prompt.invoke(prompt_input)
+            with self._generation_observation(
+                "llm_generate_answer",
+                input=prompt_input,
+                model=getattr(self.llm, "model_name", None) or getattr(self.llm, "model", None),
+            ) as observation:
+                raw = self.llm.invoke(message)
+                observation.update(output=str(getattr(raw, "content", raw)))
             answer = str(getattr(raw, "content", raw)).strip()
         except Exception:
             return self._fallback_answer(category, contexts)
@@ -183,6 +233,18 @@ class AnswerGenerator:
             f"Используйте источник {first.source}: {first.text[:500]}"
         )
 
+    def _generation_observation(self, name: str, **kwargs: object):
+        if self.tracer is None:
+            from contextlib import nullcontext
+
+            return nullcontext(type("NoopObservation", (), {"update": lambda self, **_kwargs: None})())
+        return self.tracer.observation(
+            name,
+            as_type="generation",
+            model_parameters={"temperature": 0},
+            **kwargs,
+        )
+
 
 class TicketPipeline:
     def __init__(
@@ -193,18 +255,28 @@ class TicketPipeline:
         classifier: TicketClassifier | None = None,
         retriever: KnowledgeRetriever | None = None,
         answer_generator: AnswerGenerator | None = None,
+        tracer: LangfuseTracer | None = None,
     ) -> None:
         self.settings = settings
         self.store = store
+        self.tracer = tracer
         llm = DeepSeekChatFactory(settings).create()
         categories = self._load_categories(settings.knowledge_dir)
         self.preprocessor = preprocessor or TicketTextPreprocessor()
-        self.classifier = classifier or TicketClassifier(llm=llm, categories=categories)
-        self.retriever = retriever or KnowledgeRetriever(settings=settings)
-        self.answer_generator = answer_generator or AnswerGenerator(llm=llm)
+        self.classifier = classifier or TicketClassifier(llm=llm, categories=categories, tracer=tracer)
+        self.retriever = retriever or KnowledgeRetriever(settings=settings, tracer=tracer)
+        self.answer_generator = answer_generator or AnswerGenerator(llm=llm, tracer=tracer)
 
     def process(self, text: str, channel: str, user_id: str | None) -> dict[str, object]:
-        normalized_text, redacted_text = self.preprocessor.prepare(text)
+        with self._span("preprocess_ticket", input={"characters": len(text)}) as observation:
+            normalized_text, redacted_text = self.preprocessor.prepare(text)
+            observation.update(
+                output={
+                    "normalized_text": normalized_text,
+                    "redacted_text": redacted_text,
+                    "redacted": normalized_text != redacted_text,
+                }
+            )
         classification = self.classifier.classify(redacted_text)
         contexts = self.retriever.retrieve(classification.category, redacted_text)
         requires_human_review = classification.requires_human_review or not contexts
@@ -226,10 +298,22 @@ class TicketPipeline:
             langfuse_enabled=bool(self.settings.langfuse_public_key and self.settings.langfuse_secret_key),
         )
         payload = result.model_dump()
-        self.store.append_audit({"event": "processed", "channel": channel, "user_id": user_id, **payload})
-        if requires_human_review:
-            self.store.append_pending(payload)
+        with self._span(
+            "persist_ticket_decision",
+            input={"ticket_id": result.ticket_id, "decision": decision, "requires_human_review": requires_human_review},
+        ) as observation:
+            self.store.append_audit({"event": "processed", "channel": channel, "user_id": user_id, **payload})
+            if requires_human_review:
+                self.store.append_pending(payload)
+            observation.update(output={"sources": sources, "category": classification.category})
         return payload
+
+    def _span(self, name: str, **kwargs: object):
+        if self.tracer is None:
+            from contextlib import nullcontext
+
+            return nullcontext(type("NoopObservation", (), {"update": lambda self, **_kwargs: None})())
+        return self.tracer.observation(name, as_type="span", **kwargs)
 
     def _load_categories(self, knowledge_dir: Path) -> list[str]:
         categories = sorted(path.stem for path in knowledge_dir.glob("*.txt"))
@@ -238,5 +322,16 @@ class TicketPipeline:
         return categories or list(DEFAULT_CATEGORIES)
 
 
-def process_ticket(settings: Settings, store: JsonlStore, text: str, channel: str, user_id: str | None) -> dict[str, object]:
-    return TicketPipeline(settings=settings, store=store).process(text=text, channel=channel, user_id=user_id)
+def process_ticket(
+    settings: Settings,
+    store: JsonlStore,
+    text: str,
+    channel: str,
+    user_id: str | None,
+    tracer: LangfuseTracer | None = None,
+) -> dict[str, object]:
+    return TicketPipeline(settings=settings, store=store, tracer=tracer).process(
+        text=text,
+        channel=channel,
+        user_id=user_id,
+    )
