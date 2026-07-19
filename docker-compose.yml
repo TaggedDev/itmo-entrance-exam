@@ -23,7 +23,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data
+      - support_ticket_data:/app/data
       - ./knowledge:/app/knowledge:ro
     depends_on:
       - chroma
@@ -172,6 +172,7 @@ services:
       retries: 10
 
 volumes:
+  support_ticket_data:
   chroma_data:
   langfuse_postgres_data:
   langfuse_clickhouse_data:

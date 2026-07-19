@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 
 from ml_service.config import get_settings
-from ml_service.kb import inspect_knowledge, reindex_knowledge
-from ml_service.pipeline import process_ticket
+from ml_service.kb import inspect_knowledge, reindex_knowledge_async
+from ml_service.pipeline import process_ticket_async
 from ml_service.schemas import (
     KnowledgeInspectResponse,
     ModerationRequest,
@@ -35,9 +35,9 @@ def health() -> dict[str, object]:
 
 
 @app.post("/knowledge/reindex", response_model=ReindexResponse)
-def reindex() -> ReindexResponse:
+async def reindex() -> ReindexResponse:
     with tracer.observation("knowledge_reindex", as_type="chain", metadata={"collection": settings.chroma_collection}):
-        indexed_files, indexed_chunks = reindex_knowledge(settings, tracer=tracer)
+        indexed_files, indexed_chunks = await reindex_knowledge_async(settings, tracer=tracer)
     tracer.flush()
     return ReindexResponse(
         indexed_files=indexed_files,
@@ -54,13 +54,13 @@ def inspect(limit: int = 10) -> dict[str, object]:
 
 
 @app.post("/tickets/process", response_model=TicketResponse)
-def process(request: TicketRequest) -> dict[str, object]:
+async def process(request: TicketRequest) -> dict[str, object]:
     with tracer.observation(
         "ticket_process",
         as_type="chain",
         input={"channel": request.channel, "characters": len(request.text), "user_id": request.user_id},
     ) as observation:
-        result = process_ticket(settings, store, request.text, request.channel, request.user_id, tracer=tracer)
+        result = await process_ticket_async(settings, store, request.text, request.channel, request.user_id, tracer=tracer)
         observation.update(
             output={
                 "ticket_id": result["ticket_id"],
@@ -74,15 +74,15 @@ def process(request: TicketRequest) -> dict[str, object]:
 
 
 @app.get("/tickets/pending", response_model=list[PendingTicket])
-def pending() -> list[dict[str, object]]:
-    return store.list_pending()
+async def pending() -> list[dict[str, object]]:
+    return await store.list_pending_async()
 
 
 @app.post("/tickets/{ticket_id}/moderate", response_model=ModerationResponse)
-def moderate(ticket_id: str, request: ModerationRequest) -> ModerationResponse:
+async def moderate(ticket_id: str, request: ModerationRequest) -> ModerationResponse:
     if request.action not in {"approve", "reject"}:
         raise HTTPException(status_code=400, detail="action must be approve or reject")
-    status = store.moderate(ticket_id, request.action, request.operator_note)
+    status = await store.moderate_async(ticket_id, request.action, request.operator_note)
     if status == "not_found":
         raise HTTPException(status_code=404, detail="ticket not found")
     return ModerationResponse(ticket_id=ticket_id, status=status)

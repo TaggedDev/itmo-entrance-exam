@@ -24,34 +24,64 @@ def api_get(path: str, timeout: int = 20) -> requests.Response:
     return requests.get(f"{ML_SERVICE_URL}{path}", timeout=timeout)
 
 
+def mark_ticket_processing() -> None:
+    st.session_state.ticket_processing = True
+
+
+if "ticket_processing" not in st.session_state:
+    st.session_state.ticket_processing = False
+if "ticket_result" not in st.session_state:
+    st.session_state.ticket_result = None
+if "ticket_error" not in st.session_state:
+    st.session_state.ticket_error = None
+
+
 if section == "Написать тикет":
     st.subheader("Написать тикет")
+    form_disabled = bool(st.session_state.ticket_processing)
+
     with st.form("ticket_form"):
-        text = st.text_area("Текст обращения", height=180)
-        channel = st.selectbox("Канал", ["web", "chat", "email", "mobile"])
-        user_id = st.text_input("User ID", value="")
-        submitted = st.form_submit_button("Обработать")
-    if submitted:
-        response = api_post(
-            "/tickets/process",
-            {"text": text, "channel": channel, "user_id": user_id or None},
+        text = st.text_area("Текст обращения", height=180, disabled=form_disabled)
+        channel = st.selectbox("Канал", ["web", "chat", "email", "mobile"], disabled=form_disabled)
+        user_id = st.text_input("User ID", value="1234", disabled=form_disabled)
+        submitted = st.form_submit_button(
+            "Обработать",
+            disabled=form_disabled,
+            on_click=mark_ticket_processing,
         )
+
+    status = st.empty()
+    if submitted:
+        st.session_state.ticket_result = None
+        st.session_state.ticket_error = None
+        with status.status("Форма обрабатывается...", expanded=False):
+            response = api_post(
+                "/tickets/process",
+                {"text": text, "channel": channel, "user_id": user_id or None},
+            )
         if response.ok:
-            result = response.json()
-            st.success(f"Decision: {result['decision']}")
-            left, right = st.columns(2)
-            with left:
-                st.metric("Category", result["category"])
-                st.metric("Human review", str(result["requires_human_review"]))
-            with right:
-                st.write("Answer")
-                st.info(result["answer"])
-            st.write("Retrieved context")
-            st.json(result["retrieved_context"])
-            st.write("Sources")
-            st.json(result["sources"])
+            st.session_state.ticket_result = response.json()
         else:
-            st.error(response.text)
+            st.session_state.ticket_error = response.text
+        st.session_state.ticket_processing = False
+        st.rerun()
+
+    if st.session_state.ticket_result:
+        result = st.session_state.ticket_result
+        st.success("Тикет обработан.")
+        left, right = st.columns(2)
+        with left:
+            st.metric("Category", result["category"])
+            st.metric("Human review", str(result["requires_human_review"]))
+        with right:
+            st.write("Answer")
+            st.info(result["answer"])
+        st.write("Retrieved context")
+        st.json(result["retrieved_context"])
+        st.write("Sources")
+        st.json(result["sources"])
+    elif st.session_state.ticket_error:
+        st.error(st.session_state.ticket_error)
 
 elif section == "Модерация тикетов":
     st.subheader("Модерация тикетов")
@@ -100,7 +130,9 @@ else:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("Запустить векторизацию", type="primary"):
-            with st.spinner("Индексируем документы и строим embeddings. Первый запуск может занять несколько минут."):
+            with st.spinner(
+                "Индексируем документы и строим embeddings. Первый запуск может занять несколько минут."
+            ):
                 response = api_post("/knowledge/reindex", timeout=300)
             if response.ok:
                 result = response.json()

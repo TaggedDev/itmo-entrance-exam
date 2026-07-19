@@ -1,3 +1,4 @@
+import asyncio
 import re
 
 import chromadb
@@ -85,6 +86,61 @@ def reindex_knowledge(settings: Settings, tracer: LangfuseTracer | None = None) 
     return len(files), len(documents)
 
 
+async def reindex_knowledge_async(settings: Settings, tracer: LangfuseTracer | None = None) -> tuple[int, int]:
+    settings.knowledge_dir.mkdir(parents=True, exist_ok=True)
+    vectorstore = await asyncio.to_thread(get_chroma, settings)
+    with _observation(tracer, "chroma_delete_collection", input={"collection": settings.chroma_collection}):
+        try:
+            await asyncio.to_thread(vectorstore.delete_collection)
+        except Exception:
+            pass
+    vectorstore = await asyncio.to_thread(get_chroma, settings)
+
+    documents: list[Document] = []
+    files = sorted(settings.knowledge_dir.glob("*.txt"))
+    with _observation(
+        tracer,
+        "knowledge_chunk_documents",
+        input={"knowledge_dir": str(settings.knowledge_dir), "files": [path.name for path in files]},
+    ) as observation:
+        for path in files:
+            domain = path.stem
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            chunks = _split_text(text)
+            for index, chunk in enumerate(chunks):
+                documents.append(
+                    Document(
+                        page_content=chunk,
+                        metadata={"domain": domain, "source": path.name, "chunk": index},
+                    )
+                )
+        observation.update(
+            output={
+                "indexed_files": len(files),
+                "indexed_chunks": len(documents),
+                "chunk_characters": [len(document.page_content) for document in documents],
+            }
+        )
+    if documents:
+        with _observation(
+            tracer,
+            "chroma_add_documents",
+            as_type="embedding",
+            input={
+                "collection": settings.chroma_collection,
+                "documents": len(documents),
+                "embedding_provider": settings.embedding_provider,
+                "embedding_model": settings.embedding_model,
+            },
+        ) as observation:
+            if hasattr(vectorstore, "aadd_documents"):
+                ids = await vectorstore.aadd_documents(documents)
+            else:
+                ids = await asyncio.to_thread(vectorstore.add_documents, documents)
+            observation.update(output={"ids": ids, "documents": len(ids)})
+    return len(files), len(documents)
+
+
 def inspect_knowledge(settings: Settings, limit: int = 10) -> dict[str, object]:
     vectorstore = get_chroma(settings)
     collection = vectorstore._collection
@@ -127,6 +183,33 @@ def retrieve_context(settings: Settings, query: str, k: int = 2) -> list[dict[st
         results = vectorstore.similarity_search_with_score(query, k=k)
     except Exception:
         return []
+    contexts: list[dict[str, object]] = []
+    for document, distance in results:
+        score = 1.0 / (1.0 + max(float(distance), 0.0))
+        contexts.append(
+            {
+                "domain": str(document.metadata.get("domain", "unknown")),
+                "source": str(document.metadata.get("source", "unknown")),
+                "text": document.page_content,
+                "score": round(float(score), 3),
+            }
+        )
+    return contexts
+
+
+async def retrieve_context_async(settings: Settings, query: str, k: int = 2) -> list[dict[str, object]]:
+    vectorstore = await asyncio.to_thread(get_chroma, settings)
+    try:
+        if hasattr(vectorstore, "asimilarity_search_with_score"):
+            results = await vectorstore.asimilarity_search_with_score(query, k=k)
+        else:
+            results = await asyncio.to_thread(vectorstore.similarity_search_with_score, query, k=k)
+    except Exception:
+        return []
+    return _contexts_from_results(results)
+
+
+def _contexts_from_results(results: list[tuple[Document, float]]) -> list[dict[str, object]]:
     contexts: list[dict[str, object]] = []
     for document, distance in results:
         score = 1.0 / (1.0 + max(float(distance), 0.0))

@@ -1,4 +1,5 @@
 import json
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,14 +15,23 @@ class JsonlStore:
     def append_audit(self, event: dict[str, Any]) -> None:
         self._append(self.audit_path, self._with_time(event))
 
+    async def append_audit_async(self, event: dict[str, Any]) -> None:
+        await asyncio.to_thread(self.append_audit, event)
+
     def append_pending(self, ticket: dict[str, Any]) -> None:
         self._append(self.pending_path, self._with_time(ticket))
+
+    async def append_pending_async(self, ticket: dict[str, Any]) -> None:
+        await asyncio.to_thread(self.append_pending, ticket)
 
     def list_pending(self) -> list[dict[str, Any]]:
         if not self.pending_path.exists():
             return []
         with self.pending_path.open("r", encoding="utf-8") as file:
             return [self._normalize_pending(json.loads(line)) for line in file if line.strip()]
+
+    async def list_pending_async(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self.list_pending)
 
     def moderate(self, ticket_id: str, action: str, operator_note: str) -> str:
         tickets = self.list_pending()
@@ -42,6 +52,9 @@ class JsonlStore:
                 kept.append(ticket)
         self._rewrite(self.pending_path, kept)
         return "moderated" if found else "not_found"
+
+    async def moderate_async(self, ticket_id: str, action: str, operator_note: str) -> str:
+        return await asyncio.to_thread(self.moderate, ticket_id, action, operator_note)
 
     def _append(self, path: Path, event: dict[str, Any]) -> None:
         with path.open("a", encoding="utf-8") as file:

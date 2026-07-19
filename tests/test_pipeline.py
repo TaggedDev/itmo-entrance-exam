@@ -5,7 +5,9 @@ from fastapi.testclient import TestClient
 
 from ml_service.config import get_settings
 from ml_service.main import app
-from ml_service.pipeline import TicketTextPreprocessor
+from ml_service.pipeline import AnswerGenerator, TicketClassifier, TicketPipeline, TicketTextPreprocessor
+from ml_service.schemas import RetrievedContext, TicketClassification
+from ml_service.storage import JsonlStore
 
 
 client = TestClient(app)
@@ -30,6 +32,23 @@ class FakeLLM:
         return FakeMessage("Тестовый ответ на основе базы знаний.")
 
 
+class FixedClassifier:
+    def __init__(self, category: str, requires_human_review: bool) -> None:
+        self.category = category
+        self.requires_human_review = requires_human_review
+
+    def classify(self, _ticket_text: str) -> TicketClassification:
+        return TicketClassification(category=self.category, requires_human_review=self.requires_human_review)
+
+
+class FixedRetriever:
+    def __init__(self, contexts: list[RetrievedContext]) -> None:
+        self.contexts = contexts
+
+    def retrieve(self, _category: str, _ticket_text: str) -> list[RetrievedContext]:
+        return self.contexts
+
+
 def fake_contexts(_settings: object, _query: str, k: int = 3) -> list[dict[str, Any]]:
     return [
         {
@@ -39,6 +58,29 @@ def fake_contexts(_settings: object, _query: str, k: int = 3) -> list[dict[str, 
             "score": 0.9,
         }
     ][:k]
+
+
+def payment_context() -> RetrievedContext:
+    return RetrievedContext(
+        domain="payments",
+        source="payments.txt",
+        text="Подписка стоит 10 долларов в месяц.",
+        score=0.95,
+    )
+
+
+def make_pipeline(
+    tmp_path: Path,
+    classifier: object,
+    contexts: list[RetrievedContext],
+) -> TicketPipeline:
+    return TicketPipeline(
+        settings=get_settings(),
+        store=JsonlStore(tmp_path),
+        classifier=classifier,
+        retriever=FixedRetriever(contexts),
+        answer_generator=AnswerGenerator(llm=None),
+    )
 
 
 def test_preprocessor_normalizes_and_redacts_pii() -> None:
@@ -62,7 +104,8 @@ def test_health_reports_deepseek_key_status() -> None:
     assert response.json()["embedding_provider"] == "hash"
 
 
-def test_process_safe_ticket_returns_answer(monkeypatch) -> None:
+def test_process_safe_ticket_returns_answer(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("ml_service.main.store", JsonlStore(tmp_path))
     monkeypatch.setattr("ml_service.pipeline.DeepSeekChatFactory.create", lambda _factory: FakeLLM("auth", False))
     monkeypatch.setattr("ml_service.pipeline.retrieve_context", fake_contexts)
 
@@ -81,7 +124,8 @@ def test_process_safe_ticket_returns_answer(monkeypatch) -> None:
     assert payload["retrieved_context"]
 
 
-def test_process_review_ticket_goes_to_moderation(monkeypatch) -> None:
+def test_process_review_ticket_goes_to_moderation(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("ml_service.main.store", JsonlStore(tmp_path))
     monkeypatch.setattr("ml_service.pipeline.DeepSeekChatFactory.create", lambda _factory: FakeLLM("legal", True))
     monkeypatch.setattr("ml_service.pipeline.retrieve_context", fake_contexts)
 
@@ -99,6 +143,73 @@ def test_process_review_ticket_goes_to_moderation(monkeypatch) -> None:
     pending = client.get("/tickets/pending")
     assert pending.status_code == 200
     assert any(ticket["ticket_id"] == payload["ticket_id"] for ticket in pending.json())
+
+
+def test_greeting_does_not_go_to_moderation(tmp_path: Path) -> None:
+    store = JsonlStore(tmp_path)
+    pipeline = TicketPipeline(
+        settings=get_settings(),
+        store=store,
+        classifier=TicketClassifier(
+            llm=None,
+            categories=["auth", "feedback", "general", "legal", "payments", "unknown"],
+        ),
+        retriever=FixedRetriever([]),
+        answer_generator=AnswerGenerator(llm=None),
+    )
+
+    payload = pipeline.process("Привет", "web", "1234")
+
+    assert payload["category"] == "general"
+    assert payload["requires_human_review"] is False
+    assert payload["decision"] == "auto_draft_ready"
+    assert store.list_pending() == []
+
+
+def test_known_payment_fact_does_not_require_moderation(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path, FixedClassifier("payments", False), [payment_context()])
+
+    payload = pipeline.process("Сколько стоит подписка?", "web", "1234")
+
+    assert payload["category"] == "payments"
+    assert payload["requires_human_review"] is False
+    assert payload["decision"] == "auto_draft_ready"
+
+
+def test_payment_dispute_requires_moderation(tmp_path: Path) -> None:
+    store = JsonlStore(tmp_path)
+    pipeline = TicketPipeline(
+        settings=get_settings(),
+        store=store,
+        classifier=FixedClassifier("payments", True),
+        retriever=FixedRetriever([payment_context()]),
+        answer_generator=AnswerGenerator(llm=None),
+    )
+
+    payload = pipeline.process("Списали деньги дважды, верните деньги", "web", "1234")
+
+    assert payload["requires_human_review"] is True
+    assert payload["decision"] == "needs_human_review"
+    assert any(ticket["ticket_id"] == payload["ticket_id"] for ticket in store.list_pending())
+
+
+def test_legal_claim_requires_moderation(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path, FixedClassifier("legal", True), [payment_context()])
+
+    payload = pipeline.process("Я подам иск в суд", "email", "1234")
+
+    assert payload["category"] == "legal"
+    assert payload["requires_human_review"] is True
+    assert payload["decision"] == "needs_human_review"
+
+
+def test_non_general_without_context_requires_moderation(tmp_path: Path) -> None:
+    pipeline = make_pipeline(tmp_path, FixedClassifier("auth", False), [])
+
+    payload = pipeline.process("Не приходит код для входа", "web", "1234")
+
+    assert payload["requires_human_review"] is True
+    assert payload["decision"] == "needs_human_review"
 
 
 def test_reindex_uses_knowledge_directory() -> None:
