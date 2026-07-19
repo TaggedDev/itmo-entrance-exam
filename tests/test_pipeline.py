@@ -14,6 +14,7 @@ def test_health_reports_deepseek_key_status() -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
     assert "deepseek_api_key_loaded" in response.json()
+    assert response.json()["embedding_provider"] == "hash"
 
 
 def test_process_safe_ticket_returns_draft() -> None:
@@ -51,3 +52,4 @@ def test_reindex_uses_knowledge_directory() -> None:
     payload = response.json()
     assert payload["indexed_files"] >= 4
     assert payload["indexed_chunks"] >= 4
+    assert payload["embedding_provider"] == "hash"
