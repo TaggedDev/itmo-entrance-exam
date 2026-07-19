@@ -42,7 +42,13 @@ class MultilingualE5Embeddings(Embeddings):
 
     @cached_property
     def _model(self):
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as error:
+            raise RuntimeError(
+                "EMBEDDING_PROVIDER=e5 requires optional CPU-only E5 dependencies. "
+                "Install them with `uv sync --extra e5`."
+            ) from error
 
         return SentenceTransformer(self.model_name, device=self.device)
 
