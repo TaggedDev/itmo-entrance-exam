@@ -1,6 +1,6 @@
 # Мониторинг
 
-Langfuse в PoC поднимается через Docker Compose и пишет traces для reindex и ticket processing, если заданы `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`. Сейчас Langfuse подтверждает latency и payload, но token usage в наблюдениях записывается как `0`, поэтому стоимость LLM требует отдельного замера.
+Langfuse в PoC поднимается через Docker Compose и пишет traces для reindex и ticket processing, если заданы `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`.
 
 ## Метрики
 
@@ -37,7 +37,7 @@ Drift входящего потока виден как резкий рост н
 
 ## Стоимость LLM
 
-Стоимость считать по фактическим `prompt_tokens`, `completion_tokens`, числу LLM-вызовов на тикет и тарифу текущей модели. В PoC на один полный safe ticket обычно есть два LLM-вызова: classification и answer generation. `TODO: требуется решение автора`: провести безопасный замер usage без вывода секретов и зафиксировать cost per ticket, потому что текущий Langfuse trace записывает token usage как `0`.
+Стоимость считать по фактическим `prompt_tokens`, `completion_tokens`, числу LLM-вызовов на тикет и тарифу текущей модели. В PoC на один полный safe ticket обычно есть два LLM-вызова: classification и answer generation. На большом количестве вызовов можно замерить стоимость запроса в токенах и свериться с актуальной тарификацией на api-docs.deepseek.com/quick_start/pricing/
 
 ## Проверка бизнес-задачи
 
