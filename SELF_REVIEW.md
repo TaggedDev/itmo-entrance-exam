@@ -1,44 +1,19 @@
-# Самопроверка
+# Self-review
 
-## Самая слабая часть
+Самая слабая часть решения — инфраструктура и ML-качество: нет RabbitMQ/Redis/production queue, нет Postgres, нет полноценного state management, а текущий API остается простым PoC-сервисом, а не production ML platform.
 
-Самая слабая часть решения — качество retrieval и классификации на реальных пользовательских формулировках. Deterministic hash embeddings подходят для PoC и offline smoke checks, но не заменяют полноценные multilingual embeddings. Классификация через LLM и fallback rules требует ручной labeled проверки перед любым автозакрытием.
+Embedding-модель слабая для реального retrieval: hash/fallback и базовый Chroma-поиск подходят для демонстрации, но перед production нужны сравнение embedding-моделей, оценка recall@k/precision@k и тесты на исторических тикетах.
 
-## Assumptions
+Промпты пока недостаточно точные: нет версионирования, prompt registry, A/B-тестов, regression set для prompt changes и анализа качества разных LLM-провайдеров.
 
-- Одного safe path и одного risky/fallback path достаточно, чтобы показать архитектурную идею.
-- Доля типовых обращений равна 40%, стоимость ручной обработки — 150 ₽/тикет, SLA первого ответа — 15 минут, CSAT — 4.2, reopen rate — 9%; это вводные из `task.txt`.
-- MVP может начать с 15% safe automation только после shadow/suggest проверки.
-- DeepSeek используется как текущий PoC LLM; стоимость LLM-инференса не зафиксирована и требует отдельного замера.
+Остаются риски чувствительных данных: PII частично редактируется, но нет гарантированного покрытия всех персональных, платежных и security-sensitive данных до отправки во внешнюю LLM.
 
-## Нерешенные риски
+Latency можно улучшить: отдельно оптимизировать классификацию на hot path до ориентира 500 мс, вынести медленную генерацию ответа асинхронно, сравнить настройки LLM, prompt length, retrieval top_k и caching.
 
-- PII masking на regex может пропустить реальные форматы документов, адресов или нестандартных номеров.
-- Prompt injection проверен только на уровне prompt-дизайна, а не отдельным safety test suite.
-- JSONL audit log прозрачен для PoC, но не подходит для production-аудита при высокой нагрузке.
-- Нет production queue, rate limiting, backpressure и отдельного fast path до 500 мс.
-- Langfuse сейчас пишет token usage как `0`, поэтому cost monitoring не закрыт.
+За 2 дополнительных дня реально добавить Redis/RQ или простой background worker, Postgres вместо JSONL, базовые A/B-тесты промптов, набор offline-eval тикетов и сравнение 2–3 LLM/embedding вариантов.
 
-## Что улучшить за 2 дня
+Перед production обязательно нужны authentication/authorization, личный кабинет оператора, роли доступа, audit permissions, rate limiting, retries, dead-letter queue, мониторинг стоимости LLM и алерты по SLA/ошибкам.
 
-- Заменить hash embeddings на E5 и собрать labeled retrieval set.
-- Добавить негативные safety-тесты на prompt injection и PII leakage.
-- Добавить compose smoke-test для frontend, ML service, Chroma и Langfuse.
-- Снять проверяемую стоимость LLM-инференса и заполнить TODO в product/monitoring.
-- Расширить тесты на `unknown`, empty context, legal/payments и moderation approve/reject.
+Полностью автоматизировать нельзя risky-категории: legal, refund/payment dispute, account takeover, privacy/security incidents и случаи низкой уверенности модели должны идти оператору.
 
-## Перед production
-
-- Заменить JSONL на event log/Postgres или аналогичное устойчивое audit-хранилище.
-- Вынести fast classification/routing отдельно от slow LLM generation.
-- Добавить очередь, rate limiting, auth, secrets management и SLA monitoring.
-- Провести shadow/pilot с ручной разметкой и оценкой risky false negative.
-- Завести контроль prompt/model versions и rollback-процедуру.
-
-## Что не автоматизировать полностью
-
-Не стоит полностью автоматизировать legal, спорные payments/refund, account takeover, fraud, privacy-запросы, обращения с документами и случаи без надежного retrieved context. Эти категории должны оставаться в human review даже при хорошем draft.
-
-## Критерии остановки пилота
-
-Проект нужно остановить или откатить в suggest mode, если CSAT падает ниже 4.2, reopen rate растет выше 10%, risky false negative выше 2%, unsafe draft появляется в критичных категориях или стоимость LLM-инференса съедает экономию от сокращения ручной обработки.
+Пилот стоит остановить, если на больших данных не улучшается CSAT относительно 4.2/5, растет reopen rate выше текущих 9%, ухудшается SLA первого ответа 15 минут, экономия на операторах не покрывает стоимость LLM-инференса или система замедляет обработку и ухудшает ключевые бизнес-метрики.
